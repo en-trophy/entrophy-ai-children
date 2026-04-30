@@ -1,111 +1,92 @@
 import os
-import requests
-import json
-
-# 환경 변수 로드
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-
-# 배포 이름 (기존 GPT용 + 새로 만든 DALL-E용)
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o-mini") # 기존꺼 재사용
-AZURE_DALLE_DEPLOYMENT = os.getenv("AZURE_OPENAI_DALLE_DEPLOYMENT", "dalle-3") # [NEW] 새로 만든 배포 이름
-
-def get_headers():
-    return {
-        "Content-Type": "application/json",
-        "api-key": AZURE_OPENAI_API_KEY
-    }
-
-# [기존 함수 유지] 피드백 생성용
-def call_llm(prompt: str) -> str:\
-
-    url = (
-        f"{AZURE_OPENAI_ENDPOINT}"
-        f"openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions"
-        f"?api-version={API_VERSION}"
-    )
-
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": AZURE_OPENAI_API_KEY
-    }
-
-    payload = {
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "너는 미국 수어(KSL) 학습자를 돕는 친절한 수어 코치야. "
-                    "틀렸으면 [정답 수어 특징]대로 사용자가 동작할 수 있도록 사용자에게 아주 짧지만 명확히 영어 1 문장으로 피드백해 줘. 표정이 명시되어 있으면 그것도 포함해서 알려줘. 강조 기호는 사용하지마."
-                )
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ],
-        "temperature": 0.4,
-        "max_tokens": 300
-    }
-
-    response = requests.post(url, headers=headers, json=payload)
-    response.raise_for_status()
-
-    result = response.json()
-    return result["choices"][0]["message"]["content"]
-
-# [NEW] 시나리오 생성용 (JSON 모드 지원)
-# 기존: import requests
-import httpx # pip install httpx
 import json
 import asyncio
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+import google.generativeai as genai
+from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential
 
-# 비동기 GPT 호출
-@retry(
-    stop=stop_after_attempt(3), 
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(httpx.HTTPStatusError)
+# 환경 변수 로드
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Gemini 설정
+genai.configure(api_key=GEMINI_API_KEY)
+
+# 모델 인스턴스 (텍스트용 및 이미지 생성용)
+# DALL-E 대체로 Imagen 모델을 쓸 수도 있으나, 
+# 현재 Google AI Studio SDK 기준 텍스트 모델 설정을 기본으로 합니다.
+model = genai.GenerativeModel('gemini-flash-latest')
+model_json = genai.GenerativeModel(
+    'gemini-flash-latest',
+    generation_config={"response_mime_type": "application/json"}
 )
-async def call_gpt_json_async(system_prompt: str, user_prompt: str) -> dict:
-    dalle_api_version = "2024-02-01"
-    url = f"{AZURE_OPENAI_ENDPOINT}openai/deployments/{AZURE_OPENAI_DEPLOYMENT}/chat/completions?api-version={dalle_api_version}"
+
+# [기존 함수 유지] 피드백 생성용 (동기 방식 유지)
+def call_llm(prompt: str) -> str:
+    system_instruction = (
+        "너는 미국 수어(KSL) 학습자를 돕는 친절한 수어 코치야. "
+        "틀렸으면 [정답 수어 특징]대로 사용자가 동작할 수 있도록 사용자에게 아주 짧지만 명확히 영어 1 문장으로 피드백해 줘. "
+        "표정이 명시되어 있으면 그것도 포함해서 알려줘. 강조 기호는 사용하지마."
+    )
     
-    payload = {
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.7,
-        "response_format": {"type": "json_object"}
-    }
-
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=get_headers(), json=payload, timeout=60.0)
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return json.loads(content)
-
-# 비동기 DALL-E 호출
-@retry(
-    stop=stop_after_attempt(3), 
-    wait=wait_exponential(multiplier=1, min=2, max=10),
-    retry=retry_if_exception_type(httpx.HTTPStatusError)
-)
-async def call_dalle_image_async(prompt: str) -> str:
-    url = f"{AZURE_OPENAI_ENDPOINT}openai/deployments/{AZURE_DALLE_DEPLOYMENT}/images/generations?api-version={API_VERSION}"
+    # Gemini는 system_instruction을 모델 생성 시점에 넣는 것을 권장하나, 
+    # 기존 구조 유지를 위해 프롬프트 결합 방식을 사용합니다.
+    full_prompt = f"{system_instruction}\n\nUser: {prompt}"
     
-    payload = {
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "style": "vivid",
-        "quality": "standard"
-    }
+    response = model.generate_content(
+        full_prompt,
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.4,
+            max_output_tokens=300
+        )
+    )
+    return response.text
 
-    # DALL-E는 오래 걸리므로 timeout을 길게(예: 30초~60초) 설정
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=get_headers(), json=payload, timeout=90.0)
-        response.raise_for_status()
-        return response.json()["data"][0]["url"]
+# [NEW] 시나리오 생성용 (JSON 모드 지원 - 비동기)
+# @retry(
+#     stop=stop_after_attempt(3), 
+#     wait=wait_exponential(multiplier=1, min=2, max=10)
+# )
+# async def call_gpt_json_async(system_prompt: str, user_prompt: str) -> dict:
+#     full_prompt = f"{system_prompt}\n\nUser: {user_prompt}"
+    
+#     # 비동기 호출을 위해 loop.run_in_executor 사용 (SDK가 기본적으로 동기 위주임)
+#     loop = asyncio.get_event_loop()
+#     response = await loop.run_in_executor(
+#         None, 
+#         lambda: model_json.generate_content(
+#             full_prompt,
+#             generation_config=genai.types.GenerationConfig(temperature=0.7)
+#         )
+#     )
+    
+#     return json.loads(response.text)
+
+# [NEW] 이미지 생성 호출 (DALL-E -> Gemini/Imagen 대체)
+# 참고: Google AI Studio SDK에서 Imagen을 직접 호출하는 방식은 권한에 따라 다를 수 있습니다.
+# 만약 Vertex AI가 아닌 일반 Gemini API를 쓰신다면 현재 텍스트 모델만 지원될 수 있습니다.
+# 여기서는 기존 구조 유지를 위한 껍데기를 유지하거나, 필요 시 다른 이미지 API로 연결해야 합니다.
+# @retry(
+#     stop=stop_after_attempt(3), 
+#     wait=wait_exponential(multiplier=1, min=2, max=10)
+# )
+# async def call_dalle_image_async(prompt: str) -> str:
+#     """
+#     현재 Google AI Studio Gemini API는 이미지 '생성' 결과물로 URL을 직접 반환하는 
+#     DALL-E 스타일의 API와는 구조가 다릅니다(Vertex AI Imagen 사용 권장).
+#     일단 로직 흐름을 위해 Imagen 모델 호출 구조로 작성해 두었습니다.
+#     """
+#     # 현재 무료 티어/일반 SDK에서는 이미지 생성이 제한적일 수 있으므로 
+#     # 에러 발생 시를 대비한 예외 처리가 필요할 수 있습니다.
+#     try:
+#         imagen_model = genai.GenerativeModel('imagen-3') # 혹은 사용 가능한 이미지 모델
+#         loop = asyncio.get_event_loop()
+#         response = await loop.run_in_executor(
+#             None,
+#             lambda: imagen_model.generate_content(prompt)
+#         )
+#         # 이미지 URL 반환 로직 (SDK 버전에 따라 다름)
+#         return response.candidates[0].content.parts[0].inline_data.data # 예시 구조
+#     except Exception as e:
+#         print(f"Image generation failed: {e}")
+#         return "https://via.placeholder.com/1024" # 실패 시 대체 이미지

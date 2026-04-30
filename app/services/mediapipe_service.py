@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 
 # MediaPipe 초기화
-mp_holistic = mp.solutions.holistic
+from mediapipe.python.solutions import holistic as mp_holistic
 
 # 1. 점(Point) 하나를 흉내 내는 클래스
 class ProtoLandmark:
