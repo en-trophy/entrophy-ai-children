@@ -21,8 +21,8 @@ async def lesson_feedback(lessonId: int, req: LessonFeedbackRequest):
     user_feature = extract_feature_json(results)
 
     # 2. 정답 frame 조회
-    # answer_feature = get_test_answer()
-    answer_feature = get_answer_frame(lessonId)
+    answer_feature = get_test_answer_frame()
+    # answer_feature = get_answer_frame(lessonId)
 
     # 3. 정답 여부 판단
     result = evaluate_static_sign(user_feature, answer_feature)
@@ -30,9 +30,6 @@ async def lesson_feedback(lessonId: int, req: LessonFeedbackRequest):
     # 4. 자연어 피드백 생성
     feedback = await run_in_threadpool(
         generate_feedback,
-        lesson_id=lessonId,
-        user_feature=user_feature,
-        answer_feature=answer_feature,
         evaluation=result
     )
 
